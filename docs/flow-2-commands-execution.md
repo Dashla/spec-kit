@@ -6,13 +6,13 @@
 
 ```mermaid
 flowchart LR
-    Start([项目已初始化]) --> Const[/speckit.constitution]
-    Const --> Specify[/speckit.specify]
-    Specify --> Clarify[/speckit.clarify]
-    Clarify --> Plan[/speckit.plan]
-    Plan --> Tasks[/speckit.tasks]
-    Tasks --> Analyze[/speckit.analyze]
-    Analyze --> Implement[/speckit.implement]
+    Start([项目已初始化]) --> Const["/speckit.constitution"]
+    Const --> Specify["/speckit.specify"]
+    Specify --> Clarify["/speckit.clarify"]
+    Clarify --> Plan["/speckit.plan"]
+    Plan --> Tasks["/speckit.tasks"]
+    Tasks --> Analyze["/speckit.analyze"]
+    Analyze --> Implement["/speckit.implement"]
     Implement --> End([功能完成])
 
     style Const fill:#e1f5e1
