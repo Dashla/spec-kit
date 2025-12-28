@@ -1,0 +1,675 @@
+# 带验证的代码审查规范
+# Verified Code Review Specification
+
+version: 2.0
+project:
+  name: "ecommerce-system"
+  path: "/path/to/project"
+  language: "java"
+  framework: "spring-boot"
+
+# ========================================
+# 验证配置（新增）
+# ========================================
+verification:
+  enabled: true
+
+  # 测试框架自动检测
+  test_framework:
+    auto_detect: true
+    fallback: "junit5"
+    supported: ["junit5", "testng", "jest", "pytest"]
+
+  # 测试输出目录
+  output_dir: ".code-review/verification-tests"
+
+  # 运行配置
+  execution:
+    timeout: 300000  # 5分钟
+    parallel: true
+    sandbox: true    # 沙箱环境运行
+
+  # 验证策略
+  strategy:
+    # 哪些分析需要验证
+    verify_business_logic: true      # 业务逻辑必须验证
+    verify_security_issues: true     # 安全问题必须验证
+    verify_performance_issues: true  # 性能问题必须验证
+    verify_data_flow: true           # 数据流分析需要验证
+
+    # 只输出验证通过的发现
+    output_only_verified: true
+
+    # 验证失败时的策略
+    on_verification_failure:
+      - "regenerate_test"   # 重新生成测试（最多3次）
+      - "manual_review"     # 标记为需要人工审查
+      - "skip_if_uncertain" # 如果不确定，跳过而非误报
+
+  # 验证报告
+  report:
+    include_test_code: true       # 包含测试代码
+    include_test_output: true     # 包含测试输出
+    include_reproduction: true    # 包含复现步骤
+    format: "github-issue"        # GitHub Issue格式
+
+# ========================================
+# 分析计划
+# ========================================
+analysis_plan:
+
+  # ============ Layer 0-2: 保持原有设计 ============
+  - name: "project-discovery"
+    # ... (与之前相同)
+
+  - name: "infrastructure-mapping"
+    # ... (与之前相同)
+
+  - name: "api-endpoints-extraction"
+    # ... (与之前相同)
+
+  # ============ Layer 3: 带验证的业务逻辑分析 ============
+  - name: "verified-business-logic-analysis"
+    description: "分析核心业务流程，并通过测试验证假设"
+
+    dependencies:
+      - "02-api-endpoints.md"
+      - "03-database-schema.md"
+
+    # 聚焦关键业务
+    focus_on:
+      - service: "OrderService"
+        methods:
+          - "createOrder"
+          - "cancelOrder"
+          - "refundOrder"
+        reason: "订单是核心业务，涉及金钱和库存"
+        verification_priority: "critical"
+
+      - service: "PaymentService"
+        methods:
+          - "pay"
+          - "refund"
+          - "handleCallback"
+        reason: "支付涉及资金安全"
+        verification_priority: "critical"
+
+      - service: "InventoryService"
+        methods:
+          - "deductStock"
+          - "releaseStock"
+        reason: "库存扣减涉及并发和一致性"
+        verification_priority: "high"
+
+    # ========================================
+    # 分析流程（新设计：假设→验证→输出）
+    # ========================================
+    workflow:
+
+      # 步骤1: 读取代码，生成假设
+      - step: "generate-hypotheses"
+        description: "阅读代码并生成关于其行为的假设"
+
+        ai_instructions: |
+          你的任务是分析 {{service}}.{{method}}() 方法，并生成关于其行为的假设。
+
+          ## 分析重点
+
+          1. **事务边界**
+             - 哪些操作在同一事务中？
+             - 是否有跨服务调用？（可能破坏事务）
+             - 异常时是否会正确回滚？
+
+          2. **数据流**
+             - 方法接收什么参数？
+             - 调用了哪些其他方法/服务？
+             - 修改了哪些数据库表？
+             - 发送了哪些消息队列消息？
+
+          3. **异常处理**
+             - 可能抛出哪些异常？
+             - 异常是否被正确处理？
+             - 异常时数据是否一致？
+
+          4. **并发问题**
+             - 是否有竞态条件？
+             - 是否需要加锁？
+             - 是否有死锁风险？
+
+          ## 输出格式
+
+          对于每个发现，生成一个"假设"：
+
+          ```json
+          {
+            "id": "H1",
+            "category": "transaction|data-flow|exception|concurrency",
+            "claim": "具体的声明，例如：订单创建和库存扣减在同一事务中",
+            "evidence": {
+              "file": "OrderService.java",
+              "line": 156,
+              "code_snippet": "相关代码片段"
+            },
+            "confidence": 0.8,  // 0-1，你对这个假设的信心
+            "verification_needed": true,  // 是否需要测试验证
+            "verification_type": "behavioral-test|exploit-test|benchmark",
+            "risk_level": "critical|high|medium|low",
+            "reasoning": "为什么这个假设重要/可能有问题"
+          }
+          ```
+
+          ## 重要提示
+
+          - 只生成你有证据支持的假设
+          - 对于关键假设，设置 verification_needed=true
+          - 不要臆测，如果代码不清楚，标记为"需要进一步分析"
+
+        output: "hypotheses.json"
+
+      # 步骤2: 为需要验证的假设生成测试
+      - step: "generate-verification-tests"
+        description: "为每个需要验证的假设生成JUnit测试"
+
+        depends_on: "generate-hypotheses"
+
+        ai_instructions: |
+          基于上一步生成的假设（hypotheses.json），为每个 verification_needed=true 的假设生成验证测试。
+
+          ## 测试要求
+
+          1. **可执行性**
+             - 必须能直接编译运行
+             - 使用项目现有的测试框架（{{test_framework}}）
+             - 使用项目现有的依赖（不添加新依赖）
+
+          2. **完整性**
+             - 包含 @BeforeEach 准备数据
+             - 包含 @AfterEach 清理数据
+             - 使用 @MockBean 模拟外部依赖
+
+          3. **清晰性**
+             - 测试名称描述验证的假设
+             - 使用 @DisplayName 说明测试目的
+             - 断言失败时给出清晰的错误信息
+
+          ## 测试类型
+
+          ### A. 行为验证测试（behavioral-test）
+          验证"代码确实做了它应该做的事"
+
+          ```java
+          @Test
+          @DisplayName("验证假设H1: 订单创建会扣减库存")
+          void verifyH1_OrderCreationDeductsInventory() {
+              // Arrange
+              String itemId = "test-item";
+              when(inventoryRepository.findByItemId(itemId))
+                  .thenReturn(new Inventory(itemId, 100));
+
+              // Act
+              orderService.createOrder(itemId, 5);
+
+              // Assert
+              ArgumentCaptor<Inventory> captor = ArgumentCaptor.forClass(Inventory.class);
+              verify(inventoryRepository).save(captor.capture());
+
+              assertEquals(95, captor.getValue().getQuantity(),
+                  "假设H1验证失败：库存应从100扣减到95");
+          }
+          ```
+
+          ### B. 边界条件测试（boundary-test）
+          验证"异常情况下的行为是否正确"
+
+          ```java
+          @Test
+          @DisplayName("验证假设H2: Kafka失败时事务回滚")
+          void verifyH2_TransactionRollbackOnKafkaFailure() {
+              // Arrange
+              doThrow(new RuntimeException("Kafka error"))
+                  .when(kafkaTemplate).send(anyString(), any());
+
+              String itemId = "test-item";
+              int initialStock = inventoryService.getStock(itemId);
+
+              // Act & Assert
+              assertThrows(RuntimeException.class, () -> {
+                  orderService.createOrder(itemId, 1);
+              });
+
+              // 验证库存是否回滚
+              int finalStock = inventoryService.getStock(itemId);
+              assertEquals(initialStock, finalStock,
+                  "假设H2验证失败：库存应该回滚但实际被扣减了");
+          }
+          ```
+
+          ### C. 并发测试（concurrency-test）
+          验证"并发场景下是否有问题"
+
+          ```java
+          @Test
+          @DisplayName("验证假设H3: 并发扣减库存不会超卖")
+          void verifyH3_NoConcurrentOverselling() throws InterruptedException {
+              // Arrange
+              String itemId = "test-item";
+              inventoryService.addStock(itemId, 10);  // 初始库存10
+
+              // Act - 20个线程同时购买
+              ExecutorService executor = Executors.newFixedThreadPool(20);
+              CountDownLatch latch = new CountDownLatch(20);
+
+              for (int i = 0; i < 20; i++) {
+                  executor.submit(() -> {
+                      try {
+                          orderService.createOrder(itemId, 1);
+                      } catch (Exception e) {
+                          // 库存不足时应该抛异常（正常）
+                      } finally {
+                          latch.countDown();
+                      }
+                  });
+              }
+
+              latch.await(10, TimeUnit.SECONDS);
+              executor.shutdown();
+
+              // Assert - 只能卖出10个
+              int finalStock = inventoryService.getStock(itemId);
+              long orderCount = orderRepository.countByItemId(itemId);
+
+              assertEquals(0, finalStock, "库存应该为0");
+              assertEquals(10, orderCount, "应该只有10个订单");
+              // 如果有11个或更多订单，说明超卖了
+          }
+          ```
+
+          ## 输出
+
+          生成完整的测试类文件：
+
+          ```java
+          package com.example.verification;
+
+          import org.junit.jupiter.api.*;
+          import org.springframework.boot.test.context.SpringBootTest;
+          import org.springframework.boot.test.mock.mockito.MockBean;
+          // ... imports
+
+          @SpringBootTest
+          @DisplayName("OrderService 业务逻辑验证测试")
+          class OrderServiceVerificationTests {
+
+              @Autowired
+              private OrderService orderService;
+
+              @MockBean
+              private KafkaTemplate<String, Object> kafkaTemplate;
+
+              // ... 所有验证测试 ...
+          }
+          ```
+
+        output:
+          - file: "{{output_dir}}/{{ServiceName}}VerificationTests.java"
+          - file: "test-generation-report.md"  # 生成了哪些测试，为什么
+
+      # 步骤3: 编译测试代码
+      - step: "compile-tests"
+        description: "编译生成的验证测试"
+
+        command: |
+          # 复制测试到项目
+          cp {{output_dir}}/*.java {{project_path}}/src/test/java/verification/
+
+          # 编译
+          cd {{project_path}}
+          ./mvnw test-compile
+
+        on_failure:
+          action: "regenerate"
+          max_retries: 3
+          instruction: |
+            编译失败，可能的原因：
+            1. 导入的类不存在
+            2. 方法签名不正确
+            3. 语法错误
+
+            请检查编译错误，修正测试代码，重新生成。
+
+      # 步骤4: 运行验证测试
+      - step: "run-verification-tests"
+        description: "在沙箱环境运行验证测试"
+
+        command: |
+          cd {{project_path}}
+
+          # 使用测试数据库（不影响生产数据）
+          export SPRING_PROFILES_ACTIVE=test
+
+          # 运行验证测试
+          ./mvnw test \
+            -Dtest=*VerificationTests \
+            -Dmaven.test.failure.ignore=true \  # 继续运行所有测试
+            -Dspring.datasource.url=jdbc:h2:mem:testdb
+
+        capture:
+          - stdout
+          - stderr
+          - test_results: "target/surefire-reports/*.xml"
+
+        timeout: 300000  # 5分钟
+
+      # 步骤5: 分析测试结果
+      - step: "analyze-test-results"
+        description: "根据测试结果，分类假设和发现问题"
+
+        depends_on: "run-verification-tests"
+
+        ai_instructions: |
+          你需要分析测试结果（JUnit XML报告），并将假设分类。
+
+          ## 输入
+
+          1. `hypotheses.json` - 之前生成的假设
+          2. `target/surefire-reports/*.xml` - JUnit测试报告
+          3. 测试的标准输出/错误输出
+
+          ## 分类逻辑
+
+          ### 类型1: 验证通过的假设 → 作为可信的发现
+
+          ```json
+          {
+            "hypothesis_id": "H1",
+            "claim": "订单创建会扣减库存",
+            "status": "verified",
+            "test": "verifyH1_OrderCreationDeductsInventory",
+            "test_result": "PASSED",
+            "confidence": 1.0,  // 验证通过，信心提升到1.0
+            "output_as": "verified-finding"
+          }
+          ```
+
+          ### 类型2: 验证失败的假设 → 发现了真实的BUG！
+
+          ```json
+          {
+            "hypothesis_id": "H2",
+            "claim": "订单创建和库存扣减在同一事务中",
+            "status": "refuted",  // 假设被推翻
+            "test": "verifyH2_TransactionRollbackOnKafkaFailure",
+            "test_result": "FAILED",
+            "failure_message": "库存应该回滚但实际被扣减了",
+            "actual_behavior": "库存和订单不在同一事务，存在一致性问题",
+            "issue_type": "critical-bug",
+            "output_as": "verified-issue"  // 输出为已验证的问题
+          }
+          ```
+
+          ### 类型3: 测试本身有问题 → 重新生成或人工审查
+
+          ```json
+          {
+            "hypothesis_id": "H3",
+            "test": "verifyH3_NoConcurrentOverselling",
+            "test_result": "ERROR",
+            "error_message": "NullPointerException at line 45",
+            "reason": "测试代码有bug",
+            "action": "regenerate_test"
+          }
+          ```
+
+          ## 输出
+
+          ```json
+          {
+            "summary": {
+              "total_hypotheses": 10,
+              "verified": 7,
+              "refuted": 2,  // 这些是真实的bug
+              "test_errors": 1
+            },
+
+            "verified_findings": [
+              // 验证通过的假设，作为可信的分析结果
+            ],
+
+            "verified_issues": [
+              // 验证失败的假设，说明发现了bug
+              {
+                "id": "ISSUE-001",
+                "severity": "critical",
+                "title": "订单创建存在事务一致性问题",
+                "hypothesis_id": "H2",
+                "test_evidence": {...},
+                "impact": "可能导致库存不准确",
+                "reproduction": {...}
+              }
+            ],
+
+            "test_errors": [
+              // 需要重新生成或人工审查的
+            ]
+          }
+          ```
+
+        output: "analysis-results.json"
+
+      # 步骤6: 生成Issue报告（GitHub风格）
+      - step: "generate-issue-report"
+        description: "基于验证结果，生成GitHub Issue风格的报告"
+
+        depends_on: "analyze-test-results"
+
+        ai_instructions: |
+          基于 analysis-results.json，生成用户友好的Issue报告。
+
+          ## 输出格式
+
+          每个 verified_issue 生成一个独立的Issue，格式如下：
+
+          ```markdown
+          ## 🔴 Issue #{{issue_number}}: {{title}}
+
+          **状态**: ✓ 已验证
+          **严重程度**: {{severity_emoji}} {{severity}}
+          **分类**: {{category}}
+          **位置**: `{{file}}:{{line}}`
+          **验证测试**: `{{test_class}}.{{test_method}}`
+
+          ---
+
+          ### 📋 问题描述
+
+          {{description}}
+
+          ### 🔍 证据
+
+          **源代码**:
+          ```{{language}}
+          {{code_snippet_with_line_numbers}}
+          ```
+
+          **验证测试** ({{test_status}}):
+          ```{{language}}
+          {{test_code}}
+          ```
+
+          **测试输出**:
+          ```
+          {{test_failure_output}}
+          ```
+
+          ### 💥 影响分析
+
+          **业务影响**: {{business_impact}}
+          **技术影响**: {{technical_impact}}
+          **财务影响**: {{financial_impact}}
+
+          ### 🔄 复现步骤
+
+          1. {{step1}}
+          2. {{step2}}
+          3. {{step3}}
+
+          **复现测试**:
+          ```bash
+          ./mvnw test -Dtest={{test_class}}#{{test_method}}
+          ```
+
+          ### 💡 建议修复
+
+          {{#each suggested_fixes}}
+          #### 方案{{@index}}: {{title}}
+
+          ```{{language}}
+          {{code}}
+          ```
+
+          **优点**: {{pros}}
+          **缺点**: {{cons}}
+          {{/each}}
+
+          ### 📎 相关代码
+
+          {{#each related_files}}
+          - `{{file}}:{{line}}` - {{description}}
+          {{/each}}
+
+          ---
+
+          [👍 确认问题] [🔧 生成修复PR] [❌ 标记误报] [💬 评论] [📋 导出Jira]
+          ```
+
+          ## 排序规则
+
+          Issue按以下优先级排序：
+          1. severity: critical > high > medium > low
+          2. category: security > data-corruption > performance > maintainability
+          3. verification_confidence: 1.0 > 0.9 > ...
+
+        output: "04-verified-business-logic-issues.md"
+
+    # 最终输出
+    output:
+      primary: "04-verified-business-logic-issues.md"
+      attachments:
+        - "hypotheses.json"
+        - "analysis-results.json"
+        - "{{output_dir}}/*.java"  # 验证测试代码
+        - "test-results.xml"
+
+  # ============ Layer 4: 安全问题验证 ============
+  - name: "verified-security-analysis"
+    description: "检测安全漏洞，并通过exploit测试验证"
+
+    workflow:
+      - step: "static-security-scan"
+        patterns:
+          - name: "sql-injection"
+            regex: 'String\.format.*INSERT|UPDATE|DELETE|SELECT'
+            risk: "critical"
+
+          - name: "hardcoded-secrets"
+            regex: 'password\s*=\s*"[^"]+"|apiKey\s*=\s*"[^"]+"'
+            risk: "high"
+
+          - name: "insecure-random"
+            regex: 'new Random\(\)|Math\.random\(\)'
+            risk: "medium"
+
+      - step: "generate-exploit-tests"
+        ai_instructions: |
+          为每个可疑的安全问题生成exploit测试。
+
+          ### SQL注入验证
+          ```java
+          @Test
+          void exploitSQLInjection() {
+              String maliciousInput = "1' OR '1'='1";
+
+              // 如果存在SQL注入，这会返回所有用户
+              List<User> users = userService.findByIdUnsafe(maliciousInput);
+
+              // 验证是否真的有漏洞
+              assertTrue(users.size() > 1,
+                  "SQL注入漏洞确认：返回了多个用户");
+          }
+          ```
+
+          ### XSS验证
+          ```java
+          @Test
+          void exploitXSS() {
+              String xssPayload = "<script>alert('XSS')</script>";
+
+              String output = commentService.addComment(xssPayload);
+
+              // 检查是否被转义
+              assertFalse(output.contains("<script>"),
+                  "XSS漏洞确认：脚本未被转义");
+          }
+          ```
+
+      - step: "run-exploit-tests"
+        sandbox: true
+        command: "./mvnw test -Dtest=SecurityExploitTests"
+
+      - step: "generate-security-advisory"
+        output: "05-verified-security-issues.md"
+        format: "CVE-style"
+
+  # ============ Layer 5: 性能问题验证 ============
+  - name: "verified-performance-analysis"
+    description: "检测性能问题，并通过benchmark验证"
+
+    workflow:
+      - step: "detect-antipatterns"
+        patterns:
+          - "循环中的数据库查询 (N+1问题)"
+          - "缺失的索引"
+          - "大事务"
+
+      - step: "generate-benchmarks"
+        framework: "jmh"
+        ai_instructions: |
+          生成JMH benchmark测试。
+
+          ```java
+          @Benchmark
+          @BenchmarkMode(Mode.AverageTime)
+          public void benchmarkGetOrders() {
+              queryCounter.reset();
+              orderService.getOrdersWithItems(100);
+
+              // 验证查询次数
+              int queryCount = queryCounter.getCount();
+              if (queryCount > 2) {
+                  throw new AssertionError(
+                      "N+1问题确认：执行了" + queryCount + "次查询");
+              }
+          }
+          ```
+
+      - step: "run-benchmarks"
+        command: "./mvnw test -Dtest=PerformanceBenchmarks"
+
+      - step: "output-performance-issues"
+        output: "06-verified-performance-issues.md"
+
+# ========================================
+# 执行配置
+# ========================================
+execution:
+  mode: "interactive"  # 每步暂停，等待确认
+
+  interactive_options:
+    pause_after_each_step: true
+    show_token_usage: true
+    show_verification_results: true  # 显示测试结果
+
+  error_handling:
+    on_step_failure: "pause"
+    on_verification_failure: "regenerate_test"
+    max_retries: 3
