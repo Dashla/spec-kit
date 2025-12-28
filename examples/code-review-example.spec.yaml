@@ -1,0 +1,587 @@
+# Code Review Specification Example
+# 这是一个真实的代码审查规范示例，展示如何分析一个Spring Boot电商项目
+
+version: 1.0
+
+metadata:
+  project_name: "legacy-ecommerce-system"
+  analysis_type: "full-review"
+  created_at: "2025-01-15"
+  author: "DevOps Team"
+
+# 分析配置
+config:
+  # 上下文管理策略
+  context_strategy:
+    max_tokens_per_step: 50000  # 每步最大50k tokens
+    summary_threshold: 2000      # 超过2000行的文件自动摘要
+    keep_recent_steps: 3         # 保留最近3步的完整输出
+
+  # 文件过滤策略
+  file_filters:
+    exclude_patterns:
+      - "**/node_modules/**"
+      - "**/target/**"
+      - "**/build/**"
+      - "**/*.log"
+      - "**/test/**"  # 暂时跳过测试文件
+
+    max_file_size_kb: 500  # 跳过超过500KB的文件
+
+# 分析计划（这是核心）
+analysis_plan:
+
+  # ============ LAYER 0: 项目发现 ============
+  - name: "project-discovery"
+    description: "快速建立项目全局认知"
+
+    tasks:
+      - scan_pattern: "**/pom.xml"
+        extract:
+          - "dependencies"
+          - "plugins"
+          - "java.version"
+
+      - scan_pattern: "**/application*.yml"
+        extract:
+          - "spring.datasource"
+          - "spring.redis"
+          - "spring.kafka"
+
+      - scan_pattern: "**/*.md"
+        limit: 5  # 只看前5个文档
+        extract:
+          - "project_description"
+
+    output:
+      file: "00-project-overview.md"
+      template: |
+        # 项目概览
+
+        ## 基本信息
+        - **项目名称**: {{project_name}}
+        - **技术栈**: {{tech_stack}}
+        - **Java版本**: {{java_version}}
+
+        ## 依赖项
+        {{dependencies}}
+
+        ## 配置的基础设施
+        {{infrastructure}}
+
+        ## 项目类型判断
+        {{project_type}}
+
+        ## 下一步建议
+        {{next_steps}}
+
+    ai_instructions: |
+      你需要做的是：
+      1. 扫描pom.xml，识别这是什么类型的项目（Spring Boot版本、主要依赖）
+      2. 扫描配置文件，识别使用了哪些基础设施（MySQL、Redis、Kafka等）
+      3. 给出这个项目的简短描述（1-2句话）
+      4. 建议后续应该重点分析哪些部分
+
+      注意：不要深入细节，这一步只是快速建立全局认知。
+
+  # ============ LAYER 1: 基础设施地图 ============
+  - name: "infrastructure-mapping"
+    description: "详细分析项目使用的所有基础设施"
+
+    dependencies:
+      - "00-project-overview.md"  # 依赖上一步的输出
+
+    tasks:
+      - scan_pattern: "**/*Config.java"
+        focus_on:
+          - annotations: ["@Configuration", "@Bean"]
+          - keywords: ["DataSource", "RedisTemplate", "KafkaTemplate", "RestTemplate"]
+
+      - scan_pattern: "**/application*.yml"
+        extract_full: true
+
+    output:
+      file: "01-infrastructure-map.md"
+      template: |
+        # 基础设施地图
+
+        ## 数据库
+        {{databases}}
+
+        ## 缓存
+        {{cache_systems}}
+
+        ## 消息队列
+        {{message_queues}}
+
+        ## 外部服务
+        {{external_services}}
+
+        ## 定时任务
+        {{scheduled_tasks}}
+
+        ## 配置清单
+        ```yaml
+        {{config_summary}}
+        ```
+
+    ai_instructions: |
+      基于上一步的发现（00-project-overview.md），现在深入分析：
+
+      1. 数据库：
+         - 有几个数据库？
+         - 每个数据库的用途？
+         - 连接池配置如何？
+
+      2. 缓存：
+         - Redis的使用方式？
+         - 缓存了哪些数据？
+
+      3. 消息队列：
+         - 有哪些Topic？
+         - 生产者和消费者分别在哪？
+
+      4. 定时任务：
+         - 扫描@Scheduled注解
+         - 列出所有定时任务及其执行频率
+
+      输出格式要清晰，便于后续步骤引用。
+
+  # ============ LAYER 2: API接口层 ============
+  - name: "api-endpoints-extraction"
+    description: "提取所有REST API接口"
+
+    dependencies:
+      - "00-project-overview.md"
+      - "01-infrastructure-map.md"
+
+    tasks:
+      - scan_pattern: "**/*Controller.java"
+        analyze_with: "java-spring-analyzer"
+        extract:
+          - annotations: ["@RestController", "@RequestMapping", "@GetMapping", "@PostMapping", "@PutMapping", "@DeleteMapping"]
+          - method_signatures: true
+          - request_params: true
+          - response_types: true
+
+    output:
+      file: "02-api-endpoints.md"
+      template: |
+        # API接口文档
+
+        ## 接口总览
+        - **总计**: {{total_endpoints}} 个接口
+        - **按模块分组**: {{modules}}
+
+        ## 详细接口清单
+
+        {{#each endpoints}}
+        ### {{method}} {{path}}
+        - **描述**: {{description}}
+        - **Controller**: {{controller}}:{{line_number}}
+        - **请求参数**:
+          {{#each params}}
+          - `{{name}}` ({{type}}): {{description}}
+          {{/each}}
+        - **返回值**: {{return_type}}
+        - **异常处理**: {{exceptions}}
+
+        ---
+        {{/each}}
+
+        ## 缺失文档的接口
+        {{undocumented_apis}}
+
+        ## 接口调用关系
+        ```mermaid
+        graph LR
+        {{api_call_graph}}
+        ```
+
+    ai_instructions: |
+      这一步要提取所有的REST API：
+
+      1. 扫描所有Controller
+      2. 对每个接口，提取：
+         - HTTP方法和路径
+         - 参数（路径参数、查询参数、请求体）
+         - 返回类型
+         - 所在文件和行号（重要！）
+
+      3. 特别注意：
+         - 哪些接口没有参数校验？
+         - 哪些接口没有文档注释？
+         - 是否有认证/授权？
+
+      4. 生成接口调用关系图（如果接口之间有调用）
+
+      这个输出将是后续业务逻辑分析的基础。
+
+  # ============ LAYER 3: 数据模型层 ============
+  - name: "database-schema-extraction"
+    description: "提取数据库表结构和关系"
+
+    dependencies:
+      - "01-infrastructure-map.md"
+
+    tasks:
+      - scan_pattern: "**/*Entity.java"
+        extract:
+          - annotations: ["@Entity", "@Table", "@Column", "@Id", "@ManyToOne", "@OneToMany", "@ManyToMany"]
+          - fields: true
+          - relationships: true
+
+      - scan_pattern: "**/migrations/**/*.sql"
+        if_exists: true
+
+      - scan_pattern: "**/*Mapper.xml"
+        if_exists: true  # MyBatis
+
+    output:
+      file: "03-database-schema.md"
+      template: |
+        # 数据库设计文档
+
+        ## 数据库概览
+        {{database_overview}}
+
+        ## 表清单
+        {{#each tables}}
+        ### {{table_name}}
+        - **实体类**: {{entity_class}}:{{line_number}}
+        - **描述**: {{description}}
+        - **字段**:
+          {{#each fields}}
+          - `{{name}}` {{type}} {{#if is_primary_key}}PRIMARY KEY{{/if}} {{#if nullable}}NULL{{else}}NOT NULL{{/if}}
+          {{/each}}
+        - **索引**: {{indexes}}
+
+        ---
+        {{/each}}
+
+        ## 表关系
+        ```mermaid
+        erDiagram
+        {{er_diagram}}
+        ```
+
+        ## 潜在问题
+        {{issues}}
+
+    ai_instructions: |
+      分析数据库设计：
+
+      1. 从Entity类中提取表结构
+      2. 识别表之间的关系（一对多、多对多等）
+      3. 生成ER图
+      4. 检查潜在问题：
+         - 是否有缺失索引？
+         - 字段类型是否合理？
+         - 是否有冗余设计？
+
+  # ============ LAYER 4: 业务逻辑分析 ============
+  - name: "business-logic-analysis"
+    description: "理解核心业务流程"
+
+    dependencies:
+      - "00-project-overview.md"
+      - "02-api-endpoints.md"
+      - "03-database-schema.md"
+
+    # 这一步需要更智能的策略
+    strategy:
+      type: "focused-deep-dive"
+      focus_on:
+        # 只深入分析核心业务模块
+        - module: "OrderService"
+          reason: "订单是核心业务流程"
+          methods: ["createOrder", "cancelOrder", "refundOrder"]
+
+        - module: "PaymentService"
+          reason: "支付涉及金钱，需要重点审查"
+          methods: ["pay", "refund", "callback"]
+
+        - module: "InventoryService"
+          reason: "库存扣减涉及并发问题"
+          methods: ["deductStock", "releaseStock"]
+
+    tasks:
+      - scan_pattern: "**/*Service.java"
+        selective_read: true  # 不读全部，只读focus_on中的
+        analyze:
+          - control_flow: true
+          - transaction_boundaries: true
+          - exception_handling: true
+          - external_calls: true
+
+    output:
+      file: "04-business-logic.md"
+      template: |
+        # 业务逻辑分析
+
+        ## 核心业务流程
+
+        {{#each business_flows}}
+        ### {{flow_name}}
+
+        **触发点**: {{trigger}}
+
+        **流程图**:
+        ```mermaid
+        sequenceDiagram
+        {{sequence_diagram}}
+        ```
+
+        **关键步骤**:
+        {{#each steps}}
+        {{step_number}}. {{description}} ({{file}}:{{line}})
+        {{/each}}
+
+        **数据流**:
+        {{data_flow}}
+
+        **异常处理**:
+        {{exception_handling}}
+
+        **潜在问题**:
+        {{issues}}
+
+        ---
+        {{/each}}
+
+    ai_instructions: |
+      这是最关键的一步，理解业务逻辑：
+
+      1. 对于每个重点方法（focus_on中列出的）：
+         - 阅读完整实现
+         - 理解业务含义
+         - 画出流程图
+
+      2. 分析：
+         - 事务边界是否正确？
+         - 异常处理是否完善？
+         - 是否有并发问题？
+         - 是否有性能问题（N+1查询等）？
+
+      3. 追踪调用链：
+         - A方法调用了哪些其他方法？
+         - 涉及哪些数据库表？
+         - 发送了哪些MQ消息？
+
+      注意：不要分析所有Service，只分析focus_on中的核心业务。
+
+  # ============ LAYER 5: 代码质量审查 ============
+  - name: "code-quality-review"
+    description: "发现代码问题和安全漏洞"
+
+    dependencies:
+      - "04-business-logic.md"  # 基于业务逻辑上下文来审查
+
+    checks:
+      # 安全检查
+      - category: "security"
+        rules:
+          - name: "sql-injection"
+            pattern: ".*PreparedStatement.*|.*createQuery.*"
+            check: "是否使用参数化查询"
+
+          - name: "xss"
+            pattern: ".*innerHTML.*|.*\\.html\\(.*"
+            check: "是否对用户输入进行转义"
+
+          - name: "hardcoded-secrets"
+            pattern: "password|secret|apiKey|token"
+            check: "是否有硬编码的密码或密钥"
+
+          - name: "insecure-random"
+            pattern: "new Random\\(\\)|Math.random\\(\\)"
+            check: "是否使用安全的随机数生成器"
+
+      # 性能检查
+      - category: "performance"
+        rules:
+          - name: "n-plus-one"
+            context: "04-business-logic.md"
+            check: "在循环中查询数据库"
+
+          - name: "large-transaction"
+            check: "@Transactional注解的方法是否过大"
+
+          - name: "missing-index"
+            context: "03-database-schema.md"
+            check: "查询字段是否有索引"
+
+      # 可维护性检查
+      - category: "maintainability"
+        rules:
+          - name: "long-method"
+            threshold: 50
+            check: "方法超过50行"
+
+          - name: "high-complexity"
+            threshold: 10
+            check: "圈复杂度超过10"
+
+          - name: "code-duplication"
+            threshold: 6
+            check: "重复代码块"
+
+    output:
+      file: "05-issues-report.md"
+      template: |
+        # 代码质量报告
+
+        ## 问题概览
+        - **高危问题**: {{critical_count}}
+        - **中危问题**: {{high_count}}
+        - **低危问题**: {{medium_count}}
+        - **建议优化**: {{low_count}}
+
+        ## 安全问题
+        {{#each security_issues}}
+        ### [{{severity}}] {{title}}
+        - **位置**: {{file}}:{{line}}
+        - **描述**: {{description}}
+        - **代码**:
+          ```java
+          {{code_snippet}}
+          ```
+        - **建议**: {{recommendation}}
+
+        ---
+        {{/each}}
+
+        ## 性能问题
+        {{#each performance_issues}}
+        ### [{{severity}}] {{title}}
+        - **位置**: {{file}}:{{line}}
+        - **影响**: {{impact}}
+        - **优化建议**: {{recommendation}}
+
+        ---
+        {{/each}}
+
+        ## 可维护性问题
+        {{maintainability_issues}}
+
+        ## 优先修复清单
+        {{priority_list}}
+
+    ai_instructions: |
+      这一步进行代码质量审查：
+
+      1. 安全审查：
+         - 扫描所有代码，查找安全漏洞
+         - 每个发现都要指明具体位置（文件:行号）
+         - 给出修复建议
+
+      2. 性能审查：
+         - 结合04-business-logic.md中的业务流程
+         - 查找N+1查询、大事务等问题
+         - 估算性能影响
+
+      3. 可维护性审查：
+         - 查找过长方法、高复杂度代码
+         - 标记重复代码
+
+      4. 生成优先级清单：
+         - 先修复高危安全问题
+         - 再优化性能瓶颈
+         - 最后重构可维护性问题
+
+  # ============ FINAL: 总结报告 ============
+  - name: "final-report-generation"
+    description: "汇总所有分析结果，生成完整报告"
+
+    dependencies:
+      - "00-project-overview.md"
+      - "01-infrastructure-map.md"
+      - "02-api-endpoints.md"
+      - "03-database-schema.md"
+      - "04-business-logic.md"
+      - "05-issues-report.md"
+
+    output:
+      file: "ANALYSIS-REPORT.md"
+      template: |
+        # 项目分析总报告
+
+        **生成时间**: {{generated_at}}
+        **分析耗时**: {{duration}}
+        **扫描文件数**: {{files_scanned}}
+
+        ---
+
+        ## 执行摘要
+        {{executive_summary}}
+
+        ## 项目概况
+        {{project_overview_summary}}
+
+        ## 技术架构
+        {{architecture_summary}}
+
+        ### 架构图
+        ```mermaid
+        graph TB
+        {{architecture_diagram}}
+        ```
+
+        ## 业务能力地图
+        {{business_capability_map}}
+
+        ## 数据库设计
+        {{database_design_summary}}
+
+        ## 发现的问题
+        {{issues_summary}}
+
+        ## 改进建议
+        {{recommendations}}
+
+        ## 详细报告索引
+        - [项目概览](./00-project-overview.md)
+        - [基础设施](./01-infrastructure-map.md)
+        - [API接口](./02-api-endpoints.md)
+        - [数据库](./03-database-schema.md)
+        - [业务逻辑](./04-business-logic.md)
+        - [问题清单](./05-issues-report.md)
+
+    ai_instructions: |
+      生成最终报告：
+
+      1. 阅读前面所有步骤的输出
+      2. 写一个执行摘要（Executive Summary）：
+         - 这是什么项目？
+         - 技术栈如何？
+         - 主要发现是什么？
+         - 最大的风险是什么？
+
+      3. 生成架构图（Mermaid格式）
+      4. 汇总所有问题，按优先级排序
+      5. 给出改进路线图
+
+# 状态管理
+state:
+  current_step: null
+  completed_steps: []
+  context_snapshot: {}
+  session_id: null
+  started_at: null
+  checkpoint_file: ".code-review-state.json"
+
+# 执行选项
+execution:
+  mode: "interactive"  # interactive | batch | resume
+
+  # 交互模式：每步执行后暂停，等待用户确认
+  interactive_options:
+    pause_after_each_step: true
+    show_token_usage: true
+    allow_step_skip: true
+
+  # 错误处理
+  error_handling:
+    on_step_failure: "pause"  # pause | skip | abort
+    max_retries: 3
+    save_checkpoint_on_error: true
